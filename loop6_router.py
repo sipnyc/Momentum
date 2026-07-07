@@ -61,6 +61,38 @@ class IsochroneSolver:
             heading += heading_step
         return fan
 
+    def _distance_nm(self, lat1, lon1, lat2, lon2):
+        lat_dist = (lat2 - lat1) * 60.0
+        lon_dist = (lon2 - lon1) * 60.0 * math.cos(math.radians(lat1))
+        return math.hypot(lat_dist, lon_dist)
+
+    def solve_route(self, start_lat, start_lon, tws, twd, current_speed=0.0, current_dir=0.0,
+                     heading_step=15.0, max_steps=48, arrival_radius_nm=5.0):
+        """Chains isochrone fan steps into a full route toward the destination.
+
+        At each 15-minute step, projects the full heading fan and greedily
+        advances along whichever candidate node lands closest to the
+        destination (a standard simplification of isochrone routing: chase
+        the frontier point with the best progress toward the mark rather
+        than expanding every branch of the tree). Stops once within
+        `arrival_radius_nm` of the destination or after `max_steps` steps
+        (48 steps * 15 min = 12 hours of projected track).
+        """
+        lat, lon = start_lat, start_lon
+        route_track = [(lat, lon)]
+
+        for _ in range(max_steps):
+            if self._distance_nm(lat, lon, self.dest_lat, self.dest_lon) <= arrival_radius_nm:
+                break
+            fan = self.project_isochrone_fan(lat, lon, tws, twd, current_speed, current_dir, heading_step)
+            lat, lon = min(
+                fan.values(),
+                key=lambda node: self._distance_nm(node[0], node[1], self.dest_lat, self.dest_lon)
+            )
+            route_track.append((lat, lon))
+
+        return route_track
+
 
 if __name__ == "__main__":
     solver = IsochroneSolver()
@@ -81,3 +113,7 @@ if __name__ == "__main__":
         boat_lat, boat_lon, heading=90.0, tws=28.0, twd=90.0, current_speed=2.0, current_dir=270.0
     )
     print(f"\nHeavy air (TWS 28kt) wind-against-current node -> ({lat:.4f}, {lon:.4f})")
+
+    route = solver.solve_route(boat_lat, boat_lon, tws=14.0, twd=90.0, current_speed=1.0, current_dir=250.0)
+    print(f"\nFull route projection toward destination ({solver.dest_lat}, {solver.dest_lon}):")
+    print(f"  {len(route)} waypoints, start {route[0]} -> end {route[-1]}")

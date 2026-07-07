@@ -5,12 +5,20 @@ import time
 # Import your custom modules from the previous steps
 from loop1_replay import LogPlaybackSystem
 from loop2_analyzer import SecondStormMatrix
+from loop6_router import IsochroneSolver
 
 app = Flask(__name__)
 
 # Initialize our core background engines
 log_stream = LogPlaybackSystem()
 matrix_engine = SecondStormMatrix()
+router = IsochroneSolver()
+
+ROUTE_INTERVAL_SECONDS = 900.0  # re-solve the route every 15 minutes
+
+# The telemetry replay has no live GPS feed, so anchor route projections at
+# the same reference position loop4/loop6 use for their own validation runs.
+BOAT_LAT, BOAT_LON = 35.0, -70.0
 
 # Global thread-safe state variable
 current_boat_state = {}
@@ -18,6 +26,10 @@ current_boat_state = {}
 def telemetry_worker():
     """Background thread running continuously on the Pi to process data."""
     global current_boat_state
+    next_route_at = 0.0  # solve a route on the very first tick
+    route_track = []
+    route_updated_at = None
+
     while True:
         # 1. Pull the next packet from our playback file (Loop 1)
         telemetry = log_stream.pull_live_packet()
@@ -27,7 +39,18 @@ def telemetry_worker():
             telemetry["twa"], telemetry["tws"], telemetry["stw"]
         )
 
-        # 3. Pack everything into our global state
+        # 3. Every 15 minutes, re-run the full isochrone route projection
+        # (Loop 6) so the front-end map's track line stays current.
+        now = time.time()
+        if now >= next_route_at:
+            true_wind_dir = (telemetry["cog"] - telemetry["twa"]) % 360
+            route_track = router.solve_route(
+                BOAT_LAT, BOAT_LON, tws=telemetry["tws"], twd=true_wind_dir
+            )
+            route_updated_at = time.strftime("%H:%M:%S")
+            next_route_at = now + ROUTE_INTERVAL_SECONDS
+
+        # 4. Pack everything into our global state
         current_boat_state = {
             "time": time.strftime("%H:%M:%S"),
             "twa": telemetry["twa"],
@@ -37,6 +60,8 @@ def telemetry_worker():
             "cog": telemetry["cog"],
             "target_btv": target_btv,
             "efficiency": efficiency,
+            "route_track": route_track,
+            "route_updated_at": route_updated_at,
         }
         time.sleep(1.0) # Updates once per second
 
