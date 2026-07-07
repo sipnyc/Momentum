@@ -21,7 +21,10 @@ class GribIngestionEngine:
     def __init__(self, storage_dir="data"):
         self.storage_dir = storage_dir
         os.makedirs(storage_dir, exist_ok=True)
-        self.latest_file = None
+        # Set unconditionally (not only on a successful download) so a fresh
+        # instance whose own fetch fails still picks up a previously cached
+        # forecast from disk instead of falling straight back to defaults.
+        self.latest_file = os.path.join(self.storage_dir, "live_forecast.grib2")
         self.dataset = None
 
     def _latest_gfs_cycle(self):
@@ -59,7 +62,6 @@ class GribIngestionEngine:
         # bad/unavailable requests, so a real GRIB2 file (magic bytes "GRIB")
         # is the only reliable success signal.
         if response.status_code == 200 and response.content[:4] == b"GRIB":
-            self.latest_file = os.path.join(self.storage_dir, "live_forecast.grib2")
             with open(self.latest_file, "wb") as f:
                 f.write(response.content)
             print(f"GRIB download successful: Saved to {self.latest_file}")
