@@ -7,23 +7,35 @@ folding in ocean current drift via vector addition.
 import math
 
 from loop2_analyzer import SecondStormCompleteMatrix
+from loop8_currents import CurrentIngestionEngine
 
 DELTA_T_SECONDS = 900.0  # 15-minute isochrone time step
 
 
 class IsochroneSolver:
-    def __init__(self, destination_lat=32.3, destination_lon=-64.8):
+    def __init__(self, destination_lat=32.3, destination_lon=-64.8, current_engine=None):
         self.matrix = SecondStormCompleteMatrix()
+
+        # Accepts a pre-loaded CurrentIngestionEngine (e.g. for tests offline);
+        # otherwise pulls a fresh RTOFS slice over the network.
+        self.current_engine = current_engine or CurrentIngestionEngine()
+        if self.current_engine.dataset is None:
+            self.current_engine.fetch_rtofs_slice()
+            self.current_engine.load_dataset()  # falls back to a mocked grid if the fetch failed
+
         self.dest_lat = destination_lat
         self.dest_lon = destination_lon
 
-    def project_isochrone_node(self, start_lat, start_lon, heading, tws, twd, current_speed, current_dir):
+    def project_isochrone_node(self, start_lat, start_lon, heading, tws, twd):
         """Calculates a single forward node step factoring in polars, current, and wave penalties."""
         twa = (heading - twd) % 360
 
         # 1. Fetch performance profile from Second Storm's polar spline
         deck_state = self.matrix.analyze_deck_state(twa, tws, stw=0.0)
         stw_target = deck_state["target_btv"]
+
+        # 1b. Query the live ocean current vector at this node's position
+        current_speed, current_dir = self.current_engine.get_current_vector(start_lat, start_lon)
 
         # 2. Apply Wind-Over-Current Wave Penalty Logic
         # If heavy air and heading directly into an opposing ocean current vector
@@ -49,15 +61,12 @@ class IsochroneSolver:
 
         return start_lat + delta_lat, start_lon + delta_lon
 
-    def project_isochrone_fan(self, start_lat, start_lon, tws, twd, current_speed, current_dir,
-                               heading_step=15.0):
+    def project_isochrone_fan(self, start_lat, start_lon, tws, twd, heading_step=15.0):
         """Projects one time step of nodes across a fan of candidate headings (0-359 deg)."""
         fan = {}
         heading = 0.0
         while heading < 360.0:
-            fan[heading] = self.project_isochrone_node(
-                start_lat, start_lon, heading, tws, twd, current_speed, current_dir
-            )
+            fan[heading] = self.project_isochrone_node(start_lat, start_lon, heading, tws, twd)
             heading += heading_step
         return fan
 
@@ -66,11 +75,12 @@ class IsochroneSolver:
         lon_dist = (lon2 - lon1) * 60.0 * math.cos(math.radians(lat1))
         return math.hypot(lat_dist, lon_dist)
 
-    def solve_route(self, start_lat, start_lon, tws, twd, current_speed=0.0, current_dir=0.0,
-                     heading_step=15.0, max_steps=48, arrival_radius_nm=5.0):
+    def solve_route(self, start_lat, start_lon, tws, twd, heading_step=15.0, max_steps=48,
+                     arrival_radius_nm=5.0):
         """Chains isochrone fan steps into a full route toward the destination.
 
-        At each 15-minute step, projects the full heading fan and greedily
+        At each 15-minute step, projects the full heading fan (each node
+        querying the live current vector at its own position) and greedily
         advances along whichever candidate node lands closest to the
         destination (a standard simplification of isochrone routing: chase
         the frontier point with the best progress toward the mark rather
@@ -84,7 +94,7 @@ class IsochroneSolver:
         for _ in range(max_steps):
             if self._distance_nm(lat, lon, self.dest_lat, self.dest_lon) <= arrival_radius_nm:
                 break
-            fan = self.project_isochrone_fan(lat, lon, tws, twd, current_speed, current_dir, heading_step)
+            fan = self.project_isochrone_fan(lat, lon, tws, twd, heading_step)
             lat, lon = min(
                 fan.values(),
                 key=lambda node: self._distance_nm(node[0], node[1], self.dest_lat, self.dest_lon)
@@ -98,22 +108,21 @@ if __name__ == "__main__":
     solver = IsochroneSolver()
 
     print("Running Loop 6 Validation: Projecting isochrone heading fan...")
-    boat_lat, boat_lon = 35.0, -70.0
+    boat_lat, boat_lon = 35.0, -70.0  # inside the Loop 8 mock's Gulf Stream core box
 
-    # Moderate breeze, benign current
-    fan = solver.project_isochrone_fan(
-        boat_lat, boat_lon, tws=14.0, twd=90.0, current_speed=1.5, current_dir=270.0, heading_step=45.0
-    )
-    print("\nModerate breeze (TWS 14kt), following current:")
+    # Moderate breeze, live current queried per node
+    fan = solver.project_isochrone_fan(boat_lat, boat_lon, tws=14.0, twd=90.0, heading_step=45.0)
+    print("\nModerate breeze (TWS 14kt), live current at each node:")
     for heading, (lat, lon) in fan.items():
         print(f"  Heading {heading:>5.1f} deg -> node ({lat:.4f}, {lon:.4f})")
 
-    # Heavy air with wind-against-current square waves (TWS 28kt, wind vs current > 135 deg apart)
-    lat, lon = solver.project_isochrone_node(
-        boat_lat, boat_lon, heading=90.0, tws=28.0, twd=90.0, current_speed=2.0, current_dir=270.0
-    )
-    print(f"\nHeavy air (TWS 28kt) wind-against-current node -> ({lat:.4f}, {lon:.4f})")
+    # Heavy air with wind-against-current square waves (TWS 28kt), still in the
+    # mock's Gulf Stream box (current flows toward 55deg, so wind from 90deg vs
+    # a current headed 55deg is well within 135deg -> no penalty here; move to
+    # open water to see the penalty branch trigger against the 180deg drift).
+    lat, lon = solver.project_isochrone_node(38.0, -65.0, heading=90.0, tws=28.0, twd=90.0)
+    print(f"\nHeavy air (TWS 28kt) open-ocean wind-against-current node -> ({lat:.4f}, {lon:.4f})")
 
-    route = solver.solve_route(boat_lat, boat_lon, tws=14.0, twd=90.0, current_speed=1.0, current_dir=250.0)
+    route = solver.solve_route(boat_lat, boat_lon, tws=14.0, twd=90.0)
     print(f"\nFull route projection toward destination ({solver.dest_lat}, {solver.dest_lon}):")
     print(f"  {len(route)} waypoints, start {route[0]} -> end {route[-1]}")
