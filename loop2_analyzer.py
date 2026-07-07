@@ -1,4 +1,3 @@
-import pandas as pd
 import numpy as np
 from scipy.interpolate import RectBivariateSpline
 from loop1_replay import LogPlaybackSystem
@@ -25,8 +24,11 @@ class SecondStormMatrix:
             [5.33, 6.03, 6.67, 7.71]   # 180°
         ])
 
-        # Generate our analytical 2D spline
-        self.spline = RectBivariateSpline(self.twa_axis, self.tws_axis, self.btv_grid, kx=3, ky=3)
+        # Linear (not cubic) spline: the TWS axis has only 4 points and two
+        # TWA rows (150°, 165°) dip non-monotonically across them, so a
+        # degree-3 fit overshoots past the input data's own range (verified
+        # up to 9.80kt vs a real grid max of 9.29kt). Linear stays bounded.
+        self.spline = RectBivariateSpline(self.twa_axis, self.tws_axis, self.btv_grid, kx=1, ky=1)
 
     def evaluate_performance(self, twa, tws, stw):
         twa_clamped = np.clip(abs(twa), self.twa_axis.min(), self.twa_axis.max())
