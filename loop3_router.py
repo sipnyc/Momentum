@@ -7,7 +7,7 @@ toward the destination, rather than just checking wind vectors alone.
 import math
 
 from loop1_replay import LogPlaybackSystem
-from loop2_analyzer import SecondStormMatrix
+from loop2_analyzer import SecondStormCompleteMatrix
 
 
 class TacticalVMCengine:
@@ -42,7 +42,7 @@ class TacticalVMCengine:
 
 if __name__ == "__main__":
     log_stream = LogPlaybackSystem()
-    matrix_engine = SecondStormMatrix()
+    matrix_engine = SecondStormCompleteMatrix()
     router = TacticalVMCengine(target_bearing=140.0)  # Assume direct course line is 140 degrees
 
     print("🧭 Running Loop 3 Validation: Complete Path Core Engine...")

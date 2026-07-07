@@ -70,3 +70,32 @@ spline on a 4-point axis with non-monotonic rows) produces target speeds
 that exceed the input data's own range and would cause false tactical
 alerts in `loop3_router.py`. Trunk's existing linear-interpolation Loop 2
 implementation does not have this problem and is already in place.
+
+## Addendum: `SecondStormCompleteMatrix` (heel/reef/flat upgrade)
+
+`loop2_analyzer.py` was subsequently upgraded to `SecondStormCompleteMatrix`,
+adding three more `RectBivariateSpline(kx=3, ky=3)` fits (heel, reef,
+flattening) on the same sparse 11x4 axis. Re-ran the same overshoot scan
+against all four splines:
+
+```
+heel: data range [1.0, 27.2]   overshoot -> 27.401   undershoot -> 0.647
+reef: data range [0.85, 1.0]   overshoot -> 1.028     undershoot -> 0.739
+flat: data range [0.61, 1.0]   overshoot -> 1.008     undershoot -> 0.610
+btv:  data range [5.33, 9.29]  overshoot -> 9.805     undershoot -> 5.330
+```
+
+`reef` is the clearest case: it's a sail-area fraction bounded at 1.0 (full
+main), and the spline reports 1.028 at TWA≈74.5°, TWS≈12.9kt — a
+physically meaningless "more than full sail" target — plus an undershoot to
+0.739 at TWA≈73.5°, TWS≈18.3kt, well below the row's actual minimum of
+0.85, i.e. a spurious over-reef recommendation with no basis in the source
+data. `heel` and `flat` show the same class of artifact. This confirms the
+BTV finding above generalizes to all four target-state dimensions and gets
+worse for grids with a real physical bound (reef, flat ∈ [0, 1]).
+
+Implemented as requested with a compatibility `evaluate_performance()` shim
+so `loop3_router.py` keeps working (updated its import/instantiation from
+`SecondStormMatrix` to `SecondStormCompleteMatrix`), but the interpolation
+method itself still needs the same fix recommended above before the heel/
+reef/flat outputs can be trusted operationally.
