@@ -1,15 +1,25 @@
 import math
 
+from loop7_grib_downloader import GribIngestionEngine
+
+# 4-node forecast fan ahead of the boat (same coords the old hardcoded dummy
+# grid used). Structure once downloaded: (Latitude, Longitude) -> {"tws", "twd"}
+TRACK_NODES = [(35.0, -70.0), (35.5, -69.5), (36.0, -69.0), (36.5, -68.5)]
+
+
 class GribWarperEngine:
-    def __init__(self):
-        # Simulated raw 4x4 coordinate forecast grid ahead of the boat
-        # Structure: (Latitude, Longitude) -> {"tws_forecast": knots, "twd_forecast": degrees}
-        self.raw_grib_grid = {
-            (35.0, -70.0): {"tws": 12.0, "twd": 90.0}, # Current boat position box
-            (35.5, -69.5): {"tws": 13.0, "twd": 95.0},
-            (36.0, -69.0): {"tws": 14.0, "twd": 100.0},
-            (36.5, -68.5): {"tws": 15.0, "twd": 105.0}
-        }
+    def __init__(self, ingestion_engine=None):
+        # Accepts a pre-loaded GribIngestionEngine (e.g. for tests offline);
+        # otherwise pulls a fresh GFS slice over the network.
+        self.ingestion_engine = ingestion_engine or GribIngestionEngine()
+        if self.ingestion_engine.dataset is None:
+            if self.ingestion_engine.download_gfs_slice():
+                self.ingestion_engine.load_dataset()
+
+        # Real-time GFS forecast grid, replacing the old hardcoded dummy grid.
+        # get_wind_at_node() falls back to 15.0kt/90deg per node if the
+        # network download or dataset load above didn't succeed.
+        self.raw_grib_grid = self.ingestion_engine.build_warper_grid(TRACK_NODES)
 
     def calculate_local_variance(self, live_telemetry):
         """Compares uncorrected GRIB data to real-world instrument vectors."""
