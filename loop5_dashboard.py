@@ -1,4 +1,3 @@
-
 from flask import Flask, render_template_string, jsonify
 import threading
 import time
@@ -13,33 +12,50 @@ app = Flask(__name__)
 log_stream = LogPlaybackSystem()
 matrix_engine = SecondStormMatrix()
 
-# Global thread-safe state variable
-current_boat_state = {}
+# --- THE FIX: Seed the initial state immediately so the first render succeeds ---
+initial_packet = log_stream.pull_live_packet()
+target_btv, efficiency = matrix_engine.evaluate_performance(
+    initial_packet["twa"], initial_packet["tws"], initial_packet["stw"]
+)
+current_boat_state = {
+    "time": time.strftime("%H:%M:%S"),
+    "twa": initial_packet["twa"],
+    "tws": initial_packet["tws"],
+    "stw": initial_packet["stw"],
+    "sog": initial_packet["sog"],
+    "cog": initial_packet["cog"],
+    "target_btv": target_btv,
+    "efficiency": efficiency,
+}
 
 def telemetry_worker():
-    """Background thread running continuously on the Pi to process data."""
+    """Background thread running continuously to cycle data blocks."""
     global current_boat_state
     while True:
-        # 1. Pull the next packet from our playback file (Loop 1)
-        telemetry = log_stream.pull_live_packet()
+        try:
+            # 1. Pull the next packet from our playback file (Loop 1)
+            telemetry = log_stream.pull_live_packet()
 
-        # 2. Process metrics through Second Storm's polar chart (Loop 2)
-        target_btv, efficiency = matrix_engine.evaluate_performance(
-            telemetry["twa"], telemetry["tws"], telemetry["stw"]
-        )
+            # 2. Process metrics through Second Storm's polar chart (Loop 2)
+            target_btv, efficiency = matrix_engine.evaluate_performance(
+                telemetry["twa"], telemetry["tws"], telemetry["stw"]
+            )
 
-        # 3. Pack everything into our global state
-        current_boat_state = {
-            "time": time.strftime("%H:%M:%S"),
-            "twa": telemetry["twa"],
-            "tws": telemetry["tws"],
-            "stw": telemetry["stw"],
-            "sog": telemetry["sog"],
-            "cog": telemetry["cog"],
-            "target_btv": target_btv,
-            "efficiency": efficiency,
-        }
-        time.sleep(1.0) # Updates once per second
+            # 3. Pack everything into our global state
+            current_boat_state = {
+                "time": time.strftime("%H:%M:%S"),
+                "twa": telemetry["twa"],
+                "tws": telemetry["tws"],
+                "stw": telemetry["stw"],
+                "sog": telemetry["sog"],
+                "cog": telemetry["cog"],
+                "target_btv": target_btv,
+                "efficiency": efficiency,
+            }
+        except Exception as e:
+            print(f"Worker iteration log warning: {e}")
+            
+        time.sleep(1.0) # Core clock interval update step
 
 # --- WEB SERVER ENDPOINTS ---
 
@@ -64,30 +80,34 @@ def index():
         </style>
         <script>
             async function updateDashboard() {
-                const response = await fetch('/api/telemetry');
-                const data = await response.json();
-                if (!('stw' in data)) return;
+                try {
+                    const response = await fetch('/api/telemetry');
+                    const data = await response.json();
+                    if (!data || !('stw' in data)) return;
 
-                // Update raw metrics
-                document.getElementById('stw').innerText = data.stw.toFixed(2);
-                document.getElementById('target_btv').innerText = data.target_btv.toFixed(2);
-                document.getElementById('efficiency').innerText = data.efficiency.toFixed(1) + '%';
-                document.getElementById('tws').innerText = data.tws.toFixed(1);
-                document.getElementById('twa').innerText = data.twa.toFixed(0) + '°';
+                    // Update raw metrics
+                    document.getElementById('stw').innerText = data.stw.toFixed(2);
+                    document.getElementById('target_btv').innerText = data.target_btv.toFixed(2);
+                    document.getElementById('efficiency').innerText = data.efficiency.toFixed(1) + '%';
+                    document.getElementById('tws').innerText = data.tws.toFixed(1);
+                    document.getElementById('twa').innerText = data.twa.toFixed(0) + '°';
 
-                // Color-code efficiency performance thresholds
-                const effCard = document.getElementById('eff-card');
-                if (data.efficiency >= 98) effCard.style.borderColor = '#22c55e';
-                else if (data.efficiency >= 90) effCard.style.borderColor = '#eab308';
-                else effCard.style.borderColor = '#ef4444';
+                    // Color-code efficiency performance thresholds
+                    const effCard = document.getElementById('eff-card');
+                    if (data.efficiency >= 98) effCard.style.borderColor = '#22c55e';
+                    else if (data.efficiency >= 90) effCard.style.borderColor = '#eab308';
+                    else effCard.style.borderColor = '#ef4444';
 
-                // Manage Dynamic Alert Status Flags
-                const alert = document.getElementById('trim-alert');
-                if (data.efficiency < 92) {
-                    alert.style.display = 'block';
-                    alert.innerText = `⚠️ PERFORMANCE ALERT: Target is ${data.target_btv.toFixed(2)} kts, sailing at ${data.stw.toFixed(2)} kts. Check trim or sail selection.`;
-                } else {
-                    alert.style.display = 'none';
+                    // Manage Dynamic Alert Status Flags
+                    const alert = document.getElementById('trim-alert');
+                    if (data.efficiency < 92) {
+                        alert.style.display = 'block';
+                        alert.innerText = `⚠️ PERFORMANCE ALERT: Target is ${data.target_btv.toFixed(2)} kts, sailing at ${data.stw.toFixed(2)} kts. Check trim or sail selection.`;
+                    } else {
+                        alert.style.display = 'none';
+                    }
+                } catch (err) {
+                    console.log("Polling buffer frame delay:", err);
                 }
             }
             setInterval(updateDashboard, 1000); // Poll every second
